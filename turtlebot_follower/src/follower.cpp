@@ -40,7 +40,15 @@
 
 #include <depth_image_proc/depth_traits.h>
 
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/image_encodings.h>
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/highgui.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
+using namespace cv;
 namespace turtlebot_follower
 {
 
@@ -62,11 +70,15 @@ public:
                         max_z_(0.8), goal_z_(0.6),
                         z_scale_(1.0), x_scale_(5.0)
   {
+    // namedWindow("normal",WINDOW_AUTOSIZE);
 
   }
 
   ~TurtlebotFollower()
   {
+    // destoryWindow("normal");
+    // imshow("normal",src_img);
+    // waitKey(0);
     delete config_srv_;
   }
 
@@ -81,6 +93,7 @@ private:
   double x_scale_; /**< The scaling factor for rotational robot speed */
   bool   enabled_; /**< Enable/disable following; just prevents motor commands */
 
+  Mat src_img;
   // Service for start/stop following
   ros::ServiceServer switch_srv_;
 
@@ -141,6 +154,13 @@ private:
    */
   void imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
   {
+    cv_bridge::CvImagePtr cv_ptr;
+    // sensor_msgs::Image img = *depth_msg;
+    cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
+    src_img = cv_ptr->image;
+    // ROS_INFO("image info : %d, %d", src_img.rows, src_img.cols);
+
+    // imshow("normal",src_img);
 
     // Precompute the sin function for each row and column
     uint32_t image_width = depth_msg->width;

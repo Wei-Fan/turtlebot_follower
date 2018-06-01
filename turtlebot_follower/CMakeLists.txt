@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(turtlebot_follower)
 
 ## Find catkin macros and libraries
-find_package(catkin REQUIRED COMPONENTS nodelet roscpp visualization_msgs turtlebot_msgs depth_image_proc dynamic_reconfigure)
+find_package(catkin REQUIRED COMPONENTS nodelet roscpp visualization_msgs turtlebot_msgs depth_image_proc dynamic_reconfigure cv_bridge image_transport)
 find_package(Boost REQUIRED)
 
 generate_dynamic_reconfigure_options(cfg/Follower.cfg)
@@ -13,6 +13,10 @@ catkin_package(
   CATKIN_DEPENDS nodelet roscpp visualization_msgs turtlebot_msgs depth_image_proc dynamic_reconfigure
 )
 
+# Enable C++11
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+
+FIND_PACKAGE(OpenCV REQUIRED)
 ###########
 ## Build ##
 ###########
@@ -36,6 +40,7 @@ add_dependencies(${PROJECT_NAME}
 ## Specify libraries to link a library or executable target against
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
 )
 
 #############
