@@ -68,9 +68,11 @@ public:
   TurtlebotFollower() : min_y_(0.1), max_y_(0.5),
                         min_x_(-0.2), max_x_(0.2),
                         max_z_(0.8), goal_z_(0.6),
-                        z_scale_(1.0), x_scale_(5.0)
+                        z_scale_(1.0), x_scale_(5.0),
+                        isFirst(true)
   {
     // namedWindow("normal",WINDOW_AUTOSIZE);
+    // isFirst = true;
 
   }
 
@@ -93,6 +95,7 @@ private:
   double x_scale_; /**< The scaling factor for rotational robot speed */
   bool   enabled_; /**< Enable/disable following; just prevents motor commands */
 
+  bool isFirst;
   Mat src_img;
   // Service for start/stop following
   ros::ServiceServer switch_srv_;
@@ -131,6 +134,10 @@ private:
     dynamic_reconfigure::Server<turtlebot_follower::FollowerConfig>::CallbackType f =
         boost::bind(&TurtlebotFollower::reconfigure, this, _1, _2);
     config_srv_->setCallback(f);
+
+    ros::NodeHandle node;
+    ros::Timer timer = node.createTimer(ros::Duration(0.02), &TurtlebotFollower::iteration,this);
+    ros::spin();
   }
 
   void reconfigure(turtlebot_follower::FollowerConfig &config, uint32_t level)
@@ -145,11 +152,24 @@ private:
     x_scale_ = config.x_scale;
   }
 
+
+  /*!
+   *image processing lies in iteration
+   *melting both rgb image and depth image
+   *Publishes cmd_vel messages with the goal from the image
+   */
+  void iteration(const ros::TimerEvent& e)
+  {
+    if (isFirst)
+    {
+      isFirst = false;
+    }
+
+  }
   /*!
    * @brief Callback for point clouds.
-   * Callback for depth images. It finds the centroid
-   * of the points in a box in the center of the image. 
-   * Publishes cmd_vel messages with the goal from the image.
+   * Callback for depth images. Use a front view filter
+   * Callback for rgb images .
    * @param cloud The point cloud message.
    */
   void imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
@@ -158,6 +178,9 @@ private:
     // sensor_msgs::Image img = *depth_msg;
     cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
     src_img = cv_ptr->image;
+    Mat mask = Mat(src_img != src_img);
+    src_img.setTo(0,mask);//after wipping NAN, max = 10.000 min = 0.000
+    
     // ROS_INFO("image info : %d, %d", src_img.rows, src_img.cols);
 
     // imshow("normal",src_img);
