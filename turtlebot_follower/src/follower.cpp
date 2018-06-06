@@ -49,6 +49,13 @@
 #include <opencv2/imgproc.hpp>
 
 using namespace cv;
+using namespace std;
+
+int p0_x=-1,p0_y=-1,p1_x=-1,p1_y=-1;
+int roi_width;
+int roi_height;
+int target_x, target_y;
+
 namespace turtlebot_follower
 {
 
@@ -69,7 +76,9 @@ public:
                         min_x_(-0.2), max_x_(0.2),
                         max_z_(0.8), goal_z_(0.6),
                         z_scale_(1.0), x_scale_(5.0),
-                        isFirst(true)
+                        isFirst(true),recieve(false),
+                        // p0_x(-1),p0_y(-1),p1_x(-1),p1_y(-1),
+                        shift_scale(0.0001)
   {
     // namedWindow("normal",WINDOW_AUTOSIZE);
     // isFirst = true;
@@ -96,6 +105,13 @@ private:
   bool   enabled_; /**< Enable/disable following; just prevents motor commands */
 
   bool isFirst;
+  bool recieve;
+  
+  float shift_scale;
+  Mat target;
+  Mat src_depth_img;
+  Mat src_rgb_img;
+  Mat mask;
   Mat src_img;
   // Service for start/stop following
   ros::ServiceServer switch_srv_;
@@ -128,6 +144,9 @@ private:
     bboxpub_ = private_nh.advertise<visualization_msgs::Marker>("bbox",1);
     sub_= nh.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::imagecb, this);
 
+    sub_depth_ = nh.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::depth_imagecb, this);
+    sub_rgb_ = nh.subscribe<sensor_msgs::Image>("rgb/image_rect_color", 1, &TurtlebotFollower::rgb_imagecb, this);
+
     switch_srv_ = private_nh.advertiseService("change_state", &TurtlebotFollower::changeModeSrvCb, this);
 
     config_srv_ = new dynamic_reconfigure::Server<turtlebot_follower::FollowerConfig>(private_nh);
@@ -152,6 +171,82 @@ private:
     x_scale_ = config.x_scale;
   }
 
+  /*!
+   *image callbacks and mouse function
+   */
+  void depth_imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
+  {
+
+    cv_bridge::CvImagePtr cv_ptr;
+    // sensor_msgs::Image img = *depth_msg;
+    cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
+    src_depth_img = cv_ptr->image;
+    
+    Mat tmp_mask = Mat(src_depth_img != src_depth_img);
+    src_depth_img.setTo(10,tmp_mask);
+    mask = Mat::zeros(src_depth_img.size(),CV_8UC1);
+
+    blur(src_depth_img, src_depth_img, Size(3,3));
+
+    int rows = src_depth_img.rows;
+    int cols = src_depth_img.cols;
+
+    for (int i = 0; i < rows; ++i)
+    {
+      for (int j = 0; j < cols; ++j)
+      {
+        float t = src_depth_img.at<float>(i,j)*255/10;        
+        if (t > 80)
+          // mask.at<uchar>(i,j) = 255;
+          mask.at<uchar>(i,j) = 255;
+        else
+          // mask.at<uchar>(i,j) = uchar(t);
+          mask.at<uchar>(i,j) = 0;
+      }
+    }
+    // imshow("mask",mask);
+    // waitKey(0);
+    // imwrite("src/restart/src/test.png",tmp_img);//test alright
+    // ROS_INFO("~~~ max : %f ~~~ min : %f",max, min);
+  }
+
+  void rgb_imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
+  {
+
+    cv_bridge::CvImagePtr cv_ptr;
+    // sensor_msgs::Image img = *depth_msg;
+    cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::BGR8);
+    src_rgb_img = cv_ptr->image;
+    
+    
+    // imwrite("src/restart/src/pm_test.png",src_rgb_img);//test alright
+    // ROS_INFO("~~~ max : %f ~~~ min : %f",max, min);
+    recieve = true;
+  }
+
+  static void onMouse(int event, int x, int y, int, void* userInput)
+  {
+    if (event != EVENT_LBUTTONDOWN && event != EVENT_LBUTTONUP) return;
+    //printf("###########onMouse x : %d\n", x);
+    //printf("###########onMouse y : %d\n", y);
+    
+    Mat *img = (Mat*)userInput;
+    if (event == EVENT_LBUTTONDOWN)
+    {
+      p0_x = x;
+      p0_y = y;
+    } else if (event == EVENT_LBUTTONUP)
+    {
+      p1_x = x;
+      p1_y = y;
+      roi_width = abs(p1_x - p0_x);
+      roi_height = abs(p1_y - p0_y);
+      target_x = (p0_x+p1_x)/2;
+      target_y = (p0_y+p1_y)/2;
+      rectangle(*img,Rect(p0_x,p0_y,roi_width,roi_height),Scalar(0,0,255),1,1,0);
+      imshow("view",*img);
+    }
+  }
 
   /*!
    *image processing lies in iteration
@@ -160,11 +255,111 @@ private:
    */
   void iteration(const ros::TimerEvent& e)
   {
+    // ROS_INFO("iteration~~~~");
+    if (!recieve)
+      return;
     if (isFirst)
     {
       isFirst = false;
-    }
+      Mat src_rgb_img_0 = src_rgb_img;
+      bool init_done = false;
+      while(!init_done)
+      {
+        namedWindow("view");
+        imshow("view",src_rgb_img_0);
+        setMouseCallback("view", onMouse, &src_rgb_img_0);
+        waitKey(0);
+        destroyWindow("view");
+        if (p1_x>0)
+        {
+          init_done = true;
+        }
+      }
+      ROS_INFO("init done ~~~");
+      Mat src_rgb_roi = src_rgb_img(Rect(p0_x,p0_y,roi_width,roi_height));
+      // imshow("roi",src_rgb_roi);
+      // waitKey(0);
+      // destroyWindow("roi");
+      Mat src_hsv_img;
+      vector<Mat> hsv_vec;
+      cvtColor(src_rgb_roi,src_hsv_img,CV_BGR2HSV_FULL);
+      split(src_hsv_img,hsv_vec);
+      target = hsv_vec[0];
 
+      // imshow("H",img_h);
+      // waitKey(0);
+      // destroyWindow("H");
+      // // img_h.convertTo(img_h,CV_32F);
+
+      // ROS_INFO("convert done ~~~");
+      // int mean = 0;
+      // for (int i = 0; i < img_h.rows; ++i)
+      // {
+      //  for (int j = 0; j < img_h.cols; ++j)
+      //   {
+      //    // ROS_INFO("%d, %d : %d",i,j,img_h.at<uchar>(i,j));
+      //    mean += img_h.at<uchar>(i,j);
+      //   } 
+      // }
+      // mean = int(mean/(roi_width*roi_height));
+      // ROS_INFO("mean : %d",mean);
+      // destroyWindow("view");
+    } else {
+      /*fitering*/
+      src_rgb_img.setTo((0,0,0),mask);
+      // imshow("after mask",src_rgb_img);
+      // waitKey(0);
+      // destroyWindow("after mask");
+      bool stop = false;
+      while(!stop)
+      {
+        /*obtain roi in HSV form*/
+        Mat src_rgb_roi = src_rgb_img(Rect(target_x-roi_width/2,target_y-roi_height/2,roi_width,roi_height));
+        Mat src_hsv_img, img_h;
+        vector<Mat> hsv_vec;
+        cvtColor(src_rgb_roi,src_hsv_img,CV_BGR2HSV_FULL);
+        split(src_hsv_img,hsv_vec);
+        img_h = hsv_vec[0];
+
+        /*calculate the shift vector*/
+        float shift_x=0.0, shift_y=0.0;
+        for (int i = 0; i < img_h.rows; ++i)
+        {
+          for (int j = 0; j < img_h.cols; ++j)
+           {
+            shift_x += (i-target_x)*(255-abs(img_h.at<uchar>(i,j)-target.at<uchar>(i,j)))*shift_scale;
+            shift_y += (j-target_y)*(255-abs(img_h.at<uchar>(i,j)-target.at<uchar>(i,j)))*shift_scale;
+           } 
+        }
+        ROS_INFO("need to tune the shift_scale ~~~ shift_x : %f ~~~ shift_y : %f", shift_x, shift_y);
+        if (fabs(shift_x) < 5 && fabs(shift_y) < 5)
+        {
+          stop = true;
+        } else {
+          bool x_stop = false, y_stop = false;
+          if (target_x+shift_x-roi_width/2>0 && target_x+shift_x-roi_width/2<src_rgb_img.rows)
+          {
+            target_x += shift_x;
+          } else {
+            x_stop = true;
+          }
+          if (target_y+shift_y-roi_height/2>0 && target_y+shift_y-roi_height/2<src_rgb_img.cols)
+          {
+            target_y += shift_y;
+          } else {
+            y_stop = true;
+          }
+          if (x_stop && y_stop)
+          {
+            stop = true;
+          }
+        }
+      }
+      rectangle(src_rgb_img,Rect(target_x-roi_width/2,target_y-roi_height/2,roi_width,roi_height),Scalar(0,0,255),1,1,0);
+      imshow("monitor",src_rgb_img);
+      waitKey(0);
+      destroyWindow("monitor");
+    }
   }
   /*!
    * @brief Callback for point clouds.
@@ -351,7 +546,7 @@ private:
     bboxpub_.publish( marker );
   }
 
-  ros::Subscriber sub_;
+  ros::Subscriber sub_,sub_depth_,sub_rgb_;
   ros::Publisher cmdpub_;
   ros::Publisher markerpub_;
   ros::Publisher bboxpub_;
