@@ -40,21 +40,30 @@
 
 #include <depth_image_proc/depth_traits.h>
 
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 #include <image_transport/image_transport.h>
-#include <cv_bridge/cv_bridge.h>
-#include <opencv2/highgui.hpp>
 #include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
 
 using namespace cv;
 using namespace std;
 
 int p0_x=-1,p0_y=-1,p1_x=-1,p1_y=-1;
-int roi_width;
-int roi_height;
+
 int target_x, target_y;
+Mat target;
+Mat target_hsv;
+Rect target_rect;
+
+int histSize = 200;      
+float histR[] = {0,255};      
+const float *histRange = histR;      
+int channels[] = {0,1};     
+Mat dstHist;
 
 namespace turtlebot_follower
 {
@@ -74,11 +83,11 @@ public:
    */
   TurtlebotFollower() : min_y_(0.1), max_y_(0.5),
                         min_x_(-0.2), max_x_(0.2),
-                        max_z_(0.8), goal_z_(0.6),
-                        z_scale_(1.0), x_scale_(5.0),
-                        isFirst(true),recieve(false),
+                        max_z_(2.0), goal_z_(1.2),
+                        z_scale_(0.5), x_scale_(7.0),
+                        isFirst(true),recieve(false)
                         // p0_x(-1),p0_y(-1),p1_x(-1),p1_y(-1),
-                        shift_scale(0.0001)
+                        // shift_scale(0.0001)
   {
     // namedWindow("normal",WINDOW_AUTOSIZE);
     // isFirst = true;
@@ -107,12 +116,10 @@ private:
   bool isFirst;
   bool recieve;
   
-  float shift_scale;
-  Mat target;
   Mat src_depth_img;
   Mat src_rgb_img;
   Mat mask;
-  Mat src_img;
+
   // Service for start/stop following
   ros::ServiceServer switch_srv_;
 
@@ -127,6 +134,7 @@ private:
   virtual void onInit()
   {
     ros::NodeHandle& nh = getNodeHandle();
+    ros::NodeHandle& nh0 = getNodeHandle();
     ros::NodeHandle& private_nh = getPrivateNodeHandle();
 
     private_nh.getParam("min_y", min_y_);
@@ -142,13 +150,13 @@ private:
     cmdpub_ = private_nh.advertise<geometry_msgs::Twist> ("cmd_vel", 1);
     markerpub_ = private_nh.advertise<visualization_msgs::Marker>("marker",1);
     bboxpub_ = private_nh.advertise<visualization_msgs::Marker>("bbox",1);
-    sub_= nh.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::imagecb, this);
+    // sub_= nh.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::imagecb, this);
 
-    sub_depth_ = nh.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::depth_imagecb, this);
     sub_rgb_ = nh.subscribe<sensor_msgs::Image>("rgb/image_rect_color", 1, &TurtlebotFollower::rgb_imagecb, this);
-
+    sub_depth_ = nh0.subscribe<sensor_msgs::Image>("depth/image_rect", 1, &TurtlebotFollower::depth_imagecb, this);
+    
     switch_srv_ = private_nh.advertiseService("change_state", &TurtlebotFollower::changeModeSrvCb, this);
-
+    
     config_srv_ = new dynamic_reconfigure::Server<turtlebot_follower::FollowerConfig>(private_nh);
     dynamic_reconfigure::Server<turtlebot_follower::FollowerConfig>::CallbackType f =
         boost::bind(&TurtlebotFollower::reconfigure, this, _1, _2);
@@ -156,6 +164,7 @@ private:
 
     ros::NodeHandle node;
     ros::Timer timer = node.createTimer(ros::Duration(0.02), &TurtlebotFollower::iteration,this);
+    ROS_INFO("~~~ start iteration");
     ros::spin();
   }
 
@@ -176,7 +185,7 @@ private:
    */
   void depth_imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
   {
-
+    // ROS_INFO("~~~ start depth");
     cv_bridge::CvImagePtr cv_ptr;
     // sensor_msgs::Image img = *depth_msg;
     cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
@@ -186,7 +195,7 @@ private:
     src_depth_img.setTo(10,tmp_mask);
     mask = Mat::zeros(src_depth_img.size(),CV_8UC1);
 
-    blur(src_depth_img, src_depth_img, Size(3,3));
+    // blur(src_depth_img, src_depth_img, Size(3,3));
 
     int rows = src_depth_img.rows;
     int cols = src_depth_img.cols;
@@ -212,7 +221,7 @@ private:
 
   void rgb_imagecb(const sensor_msgs::ImageConstPtr& depth_msg)
   {
-
+    // ROS_INFO("~~~ start rgb");
     cv_bridge::CvImagePtr cv_ptr;
     // sensor_msgs::Image img = *depth_msg;
     cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::BGR8);
@@ -235,15 +244,23 @@ private:
     {
       p0_x = x;
       p0_y = y;
+      ROS_INFO("p0 : (%d,%d)",p0_x,p0_y);
     } else if (event == EVENT_LBUTTONUP)
     {
       p1_x = x;
       p1_y = y;
-      roi_width = abs(p1_x - p0_x);
-      roi_height = abs(p1_y - p0_y);
+      ROS_INFO("p1 : (%d,%d)",p1_x,p1_y);
+
+      target_rect = Rect(p0_x,p0_y,abs(p1_x - p0_x),abs(p1_y - p0_y));
+      Mat tmp_img = *img;
+      target = tmp_img(target_rect);
+      cvtColor(target,target_hsv,CV_BGR2HSV);
+
+      calcHist(&target_hsv,2,channels,Mat(),dstHist,1,&histSize,&histRange,true,false);
+      normalize(dstHist,dstHist,0,255,CV_MINMAX);
       target_x = (p0_x+p1_x)/2;
       target_y = (p0_y+p1_y)/2;
-      rectangle(*img,Rect(p0_x,p0_y,roi_width,roi_height),Scalar(0,0,255),1,1,0);
+      rectangle(*img,target_rect,Scalar(0,0,255),1,1,0);
       imshow("view",*img);
     }
   }
@@ -255,7 +272,7 @@ private:
    */
   void iteration(const ros::TimerEvent& e)
   {
-    // ROS_INFO("iteration~~~~");
+    // ROS_INFO("iteration~~~~"); 
     if (!recieve)
       return;
     if (isFirst)
@@ -276,90 +293,118 @@ private:
         }
       }
       ROS_INFO("init done ~~~");
-      Mat src_rgb_roi = src_rgb_img(Rect(p0_x,p0_y,roi_width,roi_height));
-      // imshow("roi",src_rgb_roi);
-      // waitKey(0);
-      // destroyWindow("roi");
-      Mat src_hsv_img;
-      vector<Mat> hsv_vec;
-      cvtColor(src_rgb_roi,src_hsv_img,CV_BGR2HSV_FULL);
-      split(src_hsv_img,hsv_vec);
-      target = hsv_vec[0];
 
-      // imshow("H",img_h);
-      // waitKey(0);
-      // destroyWindow("H");
-      // // img_h.convertTo(img_h,CV_32F);
-
-      // ROS_INFO("convert done ~~~");
-      // int mean = 0;
-      // for (int i = 0; i < img_h.rows; ++i)
-      // {
-      //  for (int j = 0; j < img_h.cols; ++j)
-      //   {
-      //    // ROS_INFO("%d, %d : %d",i,j,img_h.at<uchar>(i,j));
-      //    mean += img_h.at<uchar>(i,j);
-      //   } 
-      // }
-      // mean = int(mean/(roi_width*roi_height));
-      // ROS_INFO("mean : %d",mean);
-      // destroyWindow("view");
     } else {
       /*fitering*/
-      src_rgb_img.setTo((0,0,0),mask);
-      // imshow("after mask",src_rgb_img);
-      // waitKey(0);
-      // destroyWindow("after mask");
-      bool stop = false;
-      while(!stop)
-      {
-        /*obtain roi in HSV form*/
-        Mat src_rgb_roi = src_rgb_img(Rect(target_x-roi_width/2,target_y-roi_height/2,roi_width,roi_height));
-        Mat src_hsv_img, img_h;
-        vector<Mat> hsv_vec;
-        cvtColor(src_rgb_roi,src_hsv_img,CV_BGR2HSV_FULL);
-        split(src_hsv_img,hsv_vec);
-        img_h = hsv_vec[0];
+      // src_rgb_img.setTo((0,0,0),mask);
+    
+      Mat src_hsv_img;
+      Mat calcBackImage;
+      cvtColor(src_rgb_img,src_hsv_img,CV_BGR2HSV);
 
-        /*calculate the shift vector*/
-        float shift_x=0.0, shift_y=0.0;
-        for (int i = 0; i < img_h.rows; ++i)
-        {
-          for (int j = 0; j < img_h.cols; ++j)
-           {
-            shift_x += (i-target_x)*(255-abs(img_h.at<uchar>(i,j)-target.at<uchar>(i,j)))*shift_scale;
-            shift_y += (j-target_y)*(255-abs(img_h.at<uchar>(i,j)-target.at<uchar>(i,j)))*shift_scale;
-           } 
-        }
-        ROS_INFO("need to tune the shift_scale ~~~ shift_x : %f ~~~ shift_y : %f", shift_x, shift_y);
-        if (fabs(shift_x) < 5 && fabs(shift_y) < 5)
-        {
-          stop = true;
-        } else {
-          bool x_stop = false, y_stop = false;
-          if (target_x+shift_x-roi_width/2>0 && target_x+shift_x-roi_width/2<src_rgb_img.rows)
-          {
-            target_x += shift_x;
-          } else {
-            x_stop = true;
-          }
-          if (target_y+shift_y-roi_height/2>0 && target_y+shift_y-roi_height/2<src_rgb_img.cols)
-          {
-            target_y += shift_y;
-          } else {
-            y_stop = true;
-          }
-          if (x_stop && y_stop)
-          {
-            stop = true;
-          }
-        }
+      Rect target_rect_t = target_rect;
+      Mat dstHist_t = dstHist;
+      Mat target_hsv_t = target_hsv;
+
+      calcBackProject(&src_hsv_img,2,channels,dstHist_t,calcBackImage,&histRange);
+      TermCriteria criteria(TermCriteria::MAX_ITER + TermCriteria::EPS, 1000, 0.001);
+      CamShift(calcBackImage,target_rect_t,criteria);
+      Mat roi_img = src_hsv_img(target_rect_t);
+      target_hsv_t = src_hsv_img(target_rect_t);
+      calcHist(&roi_img,2,channels,Mat(),dstHist_t,1,&histSize,&histRange);
+
+      normalize(dstHist_t,dstHist_t,0.0,1.0,NORM_MINMAX);
+
+      /*simply fliter*/
+      float x_t = target_rect.x+target_rect.width/2-target_rect_t.x-target_rect_t.width/2;
+      float y_t = target_rect.y+target_rect.height/2-target_rect_t.y-target_rect_t.height/2;
+      if (sqrt(x_t*x_t+y_t*y_t)<100)
+      {
+        target_rect = target_rect_t;
+        target_x = target_rect.x+target_rect.width/2;
+        target_y = target_rect.y+target_rect.height/2;
+        dstHist = dstHist_t;
+        target_hsv = target_hsv_t;
+        // rectangle(src_rgb_img,target_rect,Scalar(255,0,0),3);
+        // imshow("monitor",src_rgb_img);
+        // waitKey(0);
+        // destroyWindow("monitor");
+      } else {
+        isFirst = true;
+        ROS_INFO("former:(%d, %d) ~~~ current:(%d, %d)", target_x,target_y,target_rect_t.x+target_rect_t.width/2,target_rect_t.y+target_rect_t.height/2);
+        ROS_ERROR("~~~ init again !!!");
       }
-      rectangle(src_rgb_img,Rect(target_x-roi_width/2,target_y-roi_height/2,roi_width,roi_height),Scalar(0,0,255),1,1,0);
-      imshow("monitor",src_rgb_img);
-      waitKey(0);
-      destroyWindow("monitor");
     }
+
+    // Precompute the sin function for each row and column
+    uint32_t image_width = src_depth_img.cols;
+    float x_radians_per_pixel = 60.0/57.0/image_width;
+    float sin_pixel_x[target.cols];
+    for (int x = 0; x < target.cols; ++x) {
+      sin_pixel_x[x] = sin((target_x + x - image_width/ 2.0)  * x_radians_per_pixel);
+    }
+    // float sin_pixel_x = sin((target_x - image_width/ 2.0)  * x_radians_per_pixel);
+
+    uint32_t image_height = src_depth_img.rows;
+    float y_radians_per_pixel = 45.0/57.0/image_width;
+    float sin_pixel_y[target.rows];
+    for (int y = 0; y < target.rows; ++y) {
+      // Sign opposite x for y up values
+      sin_pixel_y[y] = sin((image_height/ 2.0 - target_y - y)  * y_radians_per_pixel);
+    }
+    // float sin_pixel_y = sin((image_height/ 2.0 - target_y)  * y_radians_per_pixel);
+
+    //X,Y,Z of the centroid
+    float x = 0.0;
+    float y = 0.0;
+    float z = 0.0;
+    int n = 0;
+
+    // z = depth_image_proc::DepthTraits<float>::toMeters(src_depth_img.at<uchar>(target_y,target_x))/100;
+    // y = sin_pixel_y * z;
+    // x = sin_pixel_x * z;
+
+    for (int i = 0; i < target.cols; ++i)
+    {
+      for (int j = 0; j < target.rows; ++j)
+      {
+        float depth_tmp = depth_image_proc::DepthTraits<float>::toMeters(src_depth_img.at<float>(j+target_y,i+target_x));
+        // ROS_INFO("depth : %f ~~ toMeters : %f",src_depth_img.at<float>(j,i),depth_tmp);
+        if (depth_tmp >= 9.9)
+        {
+          continue;
+        }
+        y += sin_pixel_y[j] * depth_tmp;
+        x += sin_pixel_x[i] * depth_tmp;
+        z += depth_tmp;
+        n++;
+      }
+    }
+    x /= n;
+    y /= n;
+    z /= n;
+    ROS_INFO("x : %f ~~ y : %f ~~ z : %f", x,y,z);
+    
+    if(z > max_z_){
+      ROS_INFO_THROTTLE(1, "Target too far away %f, stopping the robot", z);
+      if (enabled_)
+      {
+        cmdpub_.publish(geometry_msgs::TwistPtr(new geometry_msgs::Twist()));
+      }
+      return;
+    }
+
+    ROS_INFO_THROTTLE(1, "Target at %f %f %f", x, y, z);
+    publishMarker(x, y, z);
+
+    if (enabled_)
+    {
+      geometry_msgs::TwistPtr cmd(new geometry_msgs::Twist());
+      cmd->linear.x = (z - goal_z_) * z_scale_;
+      cmd->angular.z = -x * x_scale_;
+      cmdpub_.publish(cmd);
+    }
+    publishBbox();
   }
   /*!
    * @brief Callback for point clouds.
@@ -372,7 +417,7 @@ private:
     cv_bridge::CvImagePtr cv_ptr;
     // sensor_msgs::Image img = *depth_msg;
     cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
-    src_img = cv_ptr->image;
+    Mat src_img = cv_ptr->image;
     Mat mask = Mat(src_img != src_img);
     src_img.setTo(0,mask);//after wipping NAN, max = 10.000 min = 0.000
     
