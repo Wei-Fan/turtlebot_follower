@@ -83,9 +83,11 @@ public:
    */
   TurtlebotFollower() : min_y_(0.1), max_y_(0.5),
                         min_x_(-0.2), max_x_(0.2),
-                        max_z_(2.0), goal_z_(1.2),
-                        z_scale_(0.5), x_scale_(7.0),
-                        isFirst(true),recieve(false)
+                        max_z_(4.0), goal_z_(1.2),
+                        z_scale_(0.8), x_scale_(7.0),
+                        isFirst(true),recieve(false),
+                        z_first(true),z_count(0),
+                        test_count(0)
                         // p0_x(-1),p0_y(-1),p1_x(-1),p1_y(-1),
                         // shift_scale(0.0001)
   {
@@ -99,6 +101,7 @@ public:
     // destoryWindow("normal");
     // imshow("normal",src_img);
     // waitKey(0);
+    ROS_INFO("~~~ test_count : %d", test_count);
     delete config_srv_;
   }
 
@@ -114,7 +117,10 @@ private:
   bool   enabled_; /**< Enable/disable following; just prevents motor commands */
 
   bool isFirst;
+  bool z_first;
+  int z_count;
   bool recieve;
+  int test_count;
   
   Mat src_depth_img;
   Mat src_rgb_img;
@@ -272,6 +278,7 @@ private:
    */
   void iteration(const ros::TimerEvent& e)
   {
+    test_count++;
     // ROS_INFO("iteration~~~~"); 
     if (!recieve)
       return;
@@ -325,6 +332,7 @@ private:
         target_y = target_rect.y+target_rect.height/2;
         dstHist = dstHist_t;
         target_hsv = target_hsv_t;
+        target = src_rgb_img(target_rect);
         // rectangle(src_rgb_img,target_rect,Scalar(255,0,0),3);
         // imshow("monitor",src_rgb_img);
         // waitKey(0);
@@ -341,7 +349,7 @@ private:
     float x_radians_per_pixel = 60.0/57.0/image_width;
     float sin_pixel_x[target.cols];
     for (int x = 0; x < target.cols; ++x) {
-      sin_pixel_x[x] = sin((target_x + x - image_width/ 2.0)  * x_radians_per_pixel);
+      sin_pixel_x[x] = sin((target_rect.tl().x + x - image_width/ 2.0)  * x_radians_per_pixel);
     }
     // float sin_pixel_x = sin((target_x - image_width/ 2.0)  * x_radians_per_pixel);
 
@@ -350,7 +358,7 @@ private:
     float sin_pixel_y[target.rows];
     for (int y = 0; y < target.rows; ++y) {
       // Sign opposite x for y up values
-      sin_pixel_y[y] = sin((image_height/ 2.0 - target_y - y)  * y_radians_per_pixel);
+      sin_pixel_y[y] = sin((image_height/ 2.0 - target_rect.tl().y - y)  * y_radians_per_pixel);
     }
     // float sin_pixel_y = sin((image_height/ 2.0 - target_y)  * y_radians_per_pixel);
 
@@ -370,6 +378,7 @@ private:
       {
         float depth_tmp = depth_image_proc::DepthTraits<float>::toMeters(src_depth_img.at<float>(j+target_y,i+target_x));
         // ROS_INFO("depth : %f ~~ toMeters : %f",src_depth_img.at<float>(j,i),depth_tmp);
+        
         if (depth_tmp >= 9.9)
         {
           continue;
@@ -383,10 +392,24 @@ private:
     x /= n;
     y /= n;
     z /= n;
-    ROS_INFO("x : %f ~~ y : %f ~~ z : %f", x,y,z);
     
-    if(z > max_z_){
-      ROS_INFO_THROTTLE(1, "Target too far away %f, stopping the robot", z);
+    if (z_first)
+    {
+      goal_z_ = z;
+      ROS_INFO("goal_z_ : %f",goal_z_);
+      if (z_count == 20)
+      {
+        z_first = false;
+      } else {
+        z_count++;
+      }
+
+    }
+
+    ROS_INFO("x : %f ~ y : %f ~ z : %f", x,y,z);
+
+    if(abs(z-goal_z_) > 2.0){//max_z_){
+      ROS_INFO_THROTTLE(1, "Target too far away or too closed %f, stopping the robot", z-goal_z_);
       if (enabled_)
       {
         cmdpub_.publish(geometry_msgs::TwistPtr(new geometry_msgs::Twist()));
@@ -394,14 +417,28 @@ private:
       return;
     }
 
-    ROS_INFO_THROTTLE(1, "Target at %f %f %f", x, y, z);
+    // ROS_INFO_THROTTLE(1, "Target at %f %f %f", x, y, z);
     publishMarker(x, y, z);
 
     if (enabled_)
     {
       geometry_msgs::TwistPtr cmd(new geometry_msgs::Twist());
-      cmd->linear.x = (z - goal_z_) * z_scale_;
-      cmd->angular.z = -x * x_scale_;
+      if (abs(x*3)>0.3)
+      {
+        cmd->angular.z = -x/abs(x)*0.5;//x_scale_;
+        cmd->linear.x = 0.0;
+        ROS_INFO("yaw command : %f", cmd->angular.z);
+        z_first = true;
+      }else{
+        if (abs(z-goal_z_) > 0.05)
+        {          
+          cmd->angular.z = 0.0;
+          cmd->linear.x = (z - goal_z_) * z_scale_;
+          ROS_INFO("x command : %f", cmd->linear.x);
+        }
+      }
+      // ROS_INFO("x command : %f", cmd->linear.x);
+      
       cmdpub_.publish(cmd);
     }
     publishBbox();
@@ -487,6 +524,7 @@ private:
 
       ROS_INFO_THROTTLE(1, "Centroid at %f %f %f with %d points", x, y, z, n);
       publishMarker(x, y, z);
+
 
       if (enabled_)
       {
