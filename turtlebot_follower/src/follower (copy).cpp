@@ -89,8 +89,7 @@ public:
                         max_z_(4.0), goal_z_(1.2),
                         z_scale_(0.8), x_scale_(7.0),
                         isFirst(true),recieve(false),
-                        z_first(true),z_count(0),
-                        goal_filter(0.0f)
+                        z_first(true),z_count(0)
                         // test_count(0)
                         // p0_x(-1),p0_y(-1),p1_x(-1),p1_y(-1),
                         // shift_scale(0.0001)
@@ -126,7 +125,6 @@ private:
   bool recieve;
   // int test_count;
   list<float> z_filter;
-  float goal_filter;
   
   Mat src_depth_img;
   Mat src_rgb_img;
@@ -408,95 +406,80 @@ private:
     {
       return;
     }
-    publishMarker(x, y, z);
     
+    float goal_filter = 0.0f;
+    if (z_first)
+    {
+      z_count++;
+      goal_filter += z;
+      // ROS_INFO("goal_z_ : %f",goal_z_);
+      if(z_count>=10 && z_count<20){
+        if(z_filter.empty())
+        {
+          z_filter.push_back(0.0f);
+        }else if (z_filter.size()<10)
+        {
+          z_filter.push_back(0.0f);
+        }
+      } else if(z_count == 120)
+      {
+        z_first = false;
+        z_count = 0;
+        goal_z_ = goal_filter/120;
+      }
 
+    }
+
+    // ROS_INFO("x : %f ~ y : %f ~ z_d : %f", x,y,z-goal_z_);
+
+    if(abs(z-goal_z_) > 2.0){//max_z_){
+      ROS_INFO_THROTTLE(1, "Target too far away or too closed %f, stopping the robot", z-goal_z_);
+      if (enabled_)
+      {
+        cmdpub_.publish(geometry_msgs::TwistPtr(new geometry_msgs::Twist()));
+      }
+      return;
+    }
+
+    // ROS_INFO_THROTTLE(1, "Target at %f %f %f", x, y, z);
+    publishMarker(x, y, z);
 
     if (enabled_)
-    {      
+    {
       geometry_msgs::TwistPtr cmd(new geometry_msgs::Twist());
 
-
-      if (abs(x*3)>3)//0.6) //angle control
+      if (abs(x*3)>3)//0.6)
       {
         cmd->angular.z = -x/abs(x)*0.5;//x_scale_;
         cmd->linear.x = 0.0;
         ROS_INFO("yaw command : %f", cmd->angular.z);
         z_first = true;
       }else{
-        /*configeration:
-         *z_count 1~120.
-         *0~10 buff zone;
-         *10~110 goal_filter is the norm of all z;
-         *110~120 z_filter is the norm of last 10 z
-         */
-        if (z_first) 
+
+        if (!z_filter.empty())
         {
-          z_count++;
-          // ROS_INFO("goal_z_ : %f",goal_z_);
-          if(z_count>=10&&z_count<110){
-            
-            goal_filter += z;
-            
-          }else if (z_count == 110)
+          z_filter.pop_front();
+          if (abs(z-goal_z_)>0.1)
           {
-
-            goal_z_ = goal_filter/100;
-          
-          }else if (z_count>110&&z_count<=120)
-          {
-
-            if (abs(z-goal_z_)>0.1)
-            {
-              z_filter.push_back(z-goal_z_);
-            } else{
-              z_filter.push_back(0.0f);
-            }
-
-            if (z_filter.size()>10)
-            {
-              z_filter.pop_front();
-            }
-          
-          } else if(z_count == 121)
-          {
-
-            z_first = false;
-            z_count = 0;
-            goal_filter = 0.0f;
-
+            z_filter.push_back(z-goal_z_);
+          } else{
+            z_filter.push_back(0.0f);
           }
-        } else {
-
-          //forward and backward control
           
-          if (!z_filter.empty())
-          {
-            z_filter.pop_front();
-            if (abs(z-goal_z_)>0.1)
-            {
-              z_filter.push_back(z-goal_z_);
-            } else{
-              z_filter.push_back(0.0f);
-            }
-            
-            float z_goal_z_= 0.0f;
-            for(list<float>::iterator iter = z_filter.begin();iter != z_filter.end();iter++)  
-            {  
-              // ROS_INFO("iter : %f", *iter);
-              z_goal_z_ += *iter;  
-            }
-                     
-            z_goal_z_ /= z_filter.size();
-            // ROS_INFO("z_goal_z_ : %f", z_goal_z_);
-           
-            cmd->angular.z = 0.0;
-            cmd->linear.x = z_goal_z_ * 0.8;//z_scale_;
-            ROS_INFO("x command : %f", cmd->linear.x);
+          float z_goal_z_= 0.0f;
+          for(list<float>::iterator iter = z_filter.begin();iter != z_filter.end();iter++)  
+          {  
+            // ROS_INFO("iter : %f", *iter);
+            z_goal_z_ += *iter;  
           }
+                   
+          z_goal_z_ /= z_filter.size();
+          // ROS_INFO("z_goal_z_ : %f", z_goal_z_);
+         
+          cmd->angular.z = 0.0;
+          cmd->linear.x = z_goal_z_ * 0.8;//z_scale_;
+          ROS_INFO("x command : %f", cmd->linear.x);
         }
-
-        
       }
       // ROS_INFO("x command : %f", cmd->linear.x);
       
