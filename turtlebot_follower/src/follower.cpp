@@ -90,7 +90,11 @@ public:
                         z_scale_(0.8), x_scale_(7.0),
                         isFirst(true),recieve(false),
                         z_first(true),z_count(0),
-                        goal_filter(0.0f)
+                        goal_filter(0.0f),
+                        z_est(0.0f),z_est_old(0.0f),P_est(0.0f),
+                        k_init_count(0),k_first(true),
+                        Rv(0.2),Rz(0.04),
+                        start_yaw(false)
                         // test_count(0)
                         // p0_x(-1),p0_y(-1),p1_x(-1),p1_y(-1),
                         // shift_scale(0.0001)
@@ -127,6 +131,12 @@ private:
   // int test_count;
   list<float> z_filter;
   float goal_filter;
+
+  float z_predict, z_est, z_est_old, Rv, Rz, Kk, P_predict, P_est;
+  int k_init_count;
+  bool k_first;
+
+  bool start_yaw;
   
   Mat src_depth_img;
   Mat src_rgb_img;
@@ -176,7 +186,7 @@ private:
 
     ros::NodeHandle node;
     ros::Timer timer = node.createTimer(ros::Duration(0.02), &TurtlebotFollower::iteration,this);
-    ROS_INFO("~~~ start iteration");
+    // ROS_INFO("~~~ start iteration");
     ros::spin();
   }
 
@@ -417,13 +427,21 @@ private:
       geometry_msgs::TwistPtr cmd(new geometry_msgs::Twist());
 
 
-      if (abs(x*3)>3)//0.6) //angle control
+      if (abs(x*3)>0.4)//0.6) //angle control
       {
-        cmd->angular.z = -x/abs(x)*0.5;//x_scale_;
+        start_yaw = true;
+        cmd->angular.z = -x/abs(x)*1.2;//x_scale_;
         cmd->linear.x = 0.0;
         ROS_INFO("yaw command : %f", cmd->angular.z);
-        z_first = true;
+        
       }else{
+        if (start_yaw)
+        {
+          z_first = true;
+          k_first = true;
+          start_yaw = false;
+        }
+
         /*configeration:
          *z_count 1~120.
          *0~10 buff zone;
@@ -473,12 +491,12 @@ private:
           if (!z_filter.empty())
           {
             z_filter.pop_front();
-            if (abs(z-goal_z_)>0.1)
-            {
+            // if (abs(z-goal_z_)>0.04)
+            // {
               z_filter.push_back(z-goal_z_);
-            } else{
-              z_filter.push_back(0.0f);
-            }
+            // } else{
+              // z_filter.push_back(0.0f);
+            // }
             
             float z_goal_z_= 0.0f;
             for(list<float>::iterator iter = z_filter.begin();iter != z_filter.end();iter++)  
@@ -489,9 +507,35 @@ private:
                      
             z_goal_z_ /= z_filter.size();
             // ROS_INFO("z_goal_z_ : %f", z_goal_z_);
-           
+            
+            /*
+             *Kalman filter
+             */
+
+            if (k_first)
+            { 
+              z_est_old = z_est;
+              z_est = z_goal_z_;
+              k_init_count++;
+              if (k_init_count == 2)
+              {
+                k_first = false;
+                k_init_count = 0;
+              }
+            }else{
+              
+              z_predict = z_est + 1.0*(z_est-z_est_old);
+              P_predict = P_est + Rv;
+
+              Kk = P_predict/(P_predict+Rz);
+              z_est_old = z_est;
+              z_est = z_predict + Kk*(z_goal_z_-z_predict);
+              P_est = P_predict*(1-Kk);
+              z_goal_z_ = z_est;
+            }
+
             cmd->angular.z = 0.0;
-            cmd->linear.x = z_goal_z_ * 0.8;//z_scale_;
+            cmd->linear.x = z_goal_z_ * 1.5;//z_scale_;
             ROS_INFO("x command : %f", cmd->linear.x);
           }
         }
